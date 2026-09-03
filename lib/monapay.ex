@@ -42,7 +42,40 @@ defmodule MonaPay do
   def destroy_key(client, key_id),
     do: call(client, :delete, "/api/v1/client-keys/destroy/#{segment(key_id)}")
 
+  def reveal_key(client, key_id, confirmation),
+    do: call(client, :post, "/api/v1/client-keys/#{segment(key_id)}/reveal", confirmation)
+
+  def rotate_key(client, key_id),
+    do: call(client, :post, "/api/v1/client-keys/#{segment(key_id)}/rotate", %{})
+
   def bank_accounts(client), do: call(client, :get, "/api/v1/client/bank-accounts")
+
+  def get_payment_profile(client), do: call(client, :get, "/api/v1/payment-profile")
+  def set_payment_profile(client, body), do: call(client, :put, "/api/v1/payment-profile", body)
+
+  def rotate_return_secret(client),
+    do: call(client, :post, "/api/v1/payment-profile/rotate-return-secret", %{})
+
+  def reveal_return_secret(client, confirmation),
+    do: call(client, :post, "/api/v1/payment-profile/reveal-return-secret", confirmation)
+
+  def create_checkout(client, body, options \\ []) do
+    key = options[:idempotency_key] || idempotency_key()
+    call(client, :post, "/api/v1/checkouts", body, [], [{"Idempotency-Key", key}])
+  end
+
+  def get_checkout(client, checkout_id),
+    do: call(client, :get, "/api/v1/checkouts/#{segment(checkout_id)}")
+
+  def list_checkouts(client, options \\ []) do
+    query = Keyword.take(options, [:status, :order_code, :from_date, :to_date, :page, :limit])
+    call(client, :get, "/api/v1/checkouts", nil, query)
+  end
+
+  def cancel_checkout(client, checkout_id, options \\ []) do
+    key = options[:idempotency_key] || idempotency_key()
+    call(client, :post, "/api/v1/checkouts/#{segment(checkout_id)}/cancel", %{}, [], [{"Idempotency-Key", key}])
+  end
 
   def register_virtual_account(client, body),
     do: call(client, :post, "/api/v1/acb/virtual-account/registration", body)
@@ -182,8 +215,8 @@ defmodule MonaPay do
   def verify_webhook(raw, timestamp, signature, secret, tolerance \\ 300),
     do: MonaPay.Webhook.verify_webhook(raw, timestamp, signature, secret, tolerance)
 
-  defp call(client, method, path, body \\ nil, query \\ []),
-    do: GenServer.call(client, {:request, method, path, body, query}, @call_timeout)
+  defp call(client, method, path, body \\ nil, query \\ [], headers \\ []),
+    do: GenServer.call(client, {:request, method, path, body, query, headers}, @call_timeout)
 
   @impl true
   def init(options) do
@@ -222,8 +255,8 @@ defmodule MonaPay do
     end
   end
 
-  def handle_call({:request, method, path, body, query}, _from, state) do
-    case request_with_refresh(state, method, path, body, query) do
+  def handle_call({:request, method, path, body, query, headers}, _from, state) do
+    case request_with_refresh(state, method, path, body, query, headers) do
       {:ok, data, new_state} ->
         {:reply, {:ok, data}, maybe_capture_secret(new_state, path, data)}
 
@@ -232,15 +265,15 @@ defmodule MonaPay do
     end
   end
 
-  defp request_with_refresh(state, method, path, body, query) do
+  defp request_with_refresh(state, method, path, body, query, headers) do
     with {:ok, token, logged_in} <- ensure_login(state) do
-      case send_request(logged_in, method, path, body, query, token, true) do
+      case send_request(logged_in, method, path, body, query, token, true, headers) do
         {:error, %MonaPay.Error{status: 401}} ->
           expired = %{logged_in | token: nil, token_expires_at: 0}
 
           case ensure_login(expired) do
             {:ok, refreshed, refreshed_state} ->
-              case send_request(refreshed_state, method, path, body, query, refreshed, true) do
+              case send_request(refreshed_state, method, path, body, query, refreshed, true, headers) do
                 {:ok, data} -> {:ok, data, refreshed_state}
                 {:error, error} -> {:error, error, refreshed_state}
               end
@@ -290,7 +323,7 @@ defmodule MonaPay do
     end
   end
 
-  defp send_request(state, method, path, body, query, token, authenticated) do
+  defp send_request(state, method, path, body, query, token, authenticated, custom_headers \\ []) do
     query =
       query
       |> Enum.reject(fn {_key, value} -> value in [nil, ""] end)
@@ -309,6 +342,8 @@ defmodule MonaPay do
       else
         headers
       end
+
+    headers = custom_headers ++ headers
 
     case state.transport.(method, url, headers, raw_body) do
       {:ok, status, raw} -> parse_response(status, raw)
@@ -345,6 +380,11 @@ defmodule MonaPay do
        when is_binary(secret) and secret != "",
        do: %{state | client_secret: secret}
 
+  defp maybe_capture_secret(state, path, %{"client_secret" => secret})
+       when is_binary(secret) and secret != "" do
+    if String.ends_with?(path, "/rotate"), do: %{state | client_secret: secret}, else: state
+  end
+
   defp maybe_capture_secret(state, _path, _data), do: state
 
   defp log_query(options) do
@@ -375,6 +415,12 @@ defmodule MonaPay do
     do: to_string_or_empty(item["id"]) == checkpoint or to_string_or_empty(item["transaction_code"]) == checkpoint
 
   defp transaction_matches?(_item, _checkpoint), do: false
+  defp idempotency_key do
+    <<a::binary-size(4), b::binary-size(2), c0, c1, d0, d1, e::binary-size(6)>> = :crypto.strong_rand_bytes(16)
+    c = <<rem(c0, 16) + 64, c1>>
+    d = <<rem(d0, 64) + 128, d1>>
+    Enum.map_join([a, b, c, d, e], "-", &Base.encode16(&1, case: :lower))
+  end
   defp segment(value), do: URI.encode(to_string(value), &URI.char_unreserved?/1)
   defp positive(value, _fallback) when is_integer(value) and value > 0, do: value
   defp positive(_value, fallback), do: fallback

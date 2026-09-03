@@ -2,6 +2,8 @@ defmodule MonaPay.Keys do
   def generate(client, name \\ "Default Key"), do: MonaPay.generate_key(client, name)
   def list(client), do: MonaPay.list_keys(client)
   def destroy(client, key_id), do: MonaPay.destroy_key(client, key_id)
+  def reveal(client, key_id, confirmation), do: MonaPay.reveal_key(client, key_id, confirmation)
+  def rotate(client, key_id), do: MonaPay.rotate_key(client, key_id)
 end
 
 defmodule MonaPay.VirtualAccounts do
@@ -19,6 +21,20 @@ end
 
 defmodule MonaPay.BankAccounts do
   def list(client), do: MonaPay.bank_accounts(client)
+end
+
+defmodule MonaPay.PaymentProfile do
+  def get(client), do: MonaPay.get_payment_profile(client)
+  def set(client, body), do: MonaPay.set_payment_profile(client, body)
+  def rotate_return_secret(client), do: MonaPay.rotate_return_secret(client)
+  def reveal_return_secret(client, confirmation), do: MonaPay.reveal_return_secret(client, confirmation)
+end
+
+defmodule MonaPay.Checkouts do
+  def create(client, body, options \\ []), do: MonaPay.create_checkout(client, body, options)
+  def get(client, checkout_id), do: MonaPay.get_checkout(client, checkout_id)
+  def list(client, options \\ []), do: MonaPay.list_checkouts(client, options)
+  def cancel(client, checkout_id, options \\ []), do: MonaPay.cancel_checkout(client, checkout_id, options)
 end
 
 defmodule MonaPay.QR do

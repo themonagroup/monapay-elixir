@@ -58,6 +58,13 @@ defmodule MonaPayTest do
     {_method, _url, get_headers, _body} = List.last(state.requests)
     refute Enum.any?(get_headers, fn {name, _value} -> name == "X-Client-Secret" end)
     assert {"Authorization", "Bearer token-2"} in get_headers
+
+    assert {:ok, %{"id" => "ok"}} =
+             MonaPay.Checkouts.create(client, %{"amount" => 250_000}, idempotency_key: "checkout-key")
+
+    {_method, _url, checkout_headers, _body} = Agent.get(calls, &List.last(&1.requests))
+    assert {"Idempotency-Key", "checkout-key"} in checkout_headers
+    assert {"X-Client-Secret", "secret"} in checkout_headers
   end
 
   test "transaction stream phân trang và dừng tại since_id phía client" do

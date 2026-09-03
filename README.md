@@ -34,7 +34,19 @@ client
 |> Enum.each(&IO.inspect(&1["transaction_code"]))
 ```
 
-Client process cache token theo hạn, refresh đúng một lần sau HTTP 401 và chỉ gắn `X-Client-Secret` vào POST/PUT/DELETE. Các resource module gồm `Keys`, `VirtualAccounts`, `BankAccounts`, `QR`, `Transactions`, `Webhooks`, `WebhookLogs`, `Sandbox`, `EmailConfigs`, `EmailLogs`, `EmailSuppressions` dưới namespace `MonaPay`.
+Client process cache token theo hạn, refresh đúng một lần sau HTTP 401 và chỉ gắn `X-Client-Secret` vào POST/PUT/DELETE. Các resource module gồm `Keys`, `PaymentProfile`, `Checkouts`, `VirtualAccounts`, `BankAccounts`, `QR`, `Transactions`, `Webhooks`, `WebhookLogs`, `Sandbox`, `EmailConfigs`, `EmailLogs`, `EmailSuppressions` dưới namespace `MonaPay`.
+
+## Trang thanh toán (hosted checkout)
+
+```elixir
+{:ok, checkout} = MonaPay.Checkouts.create(client, %{"amount" => 250_000, "order_code" => "DH10234", "return_url" => "https://shop.vn/payment/return"})
+redirect(conn, external: checkout["checkout_url"])
+if event["type"] == "CHECKOUT_PAID" do
+  fulfill_once(event["data"]["order_code"])
+end
+```
+
+SDK tự sinh `Idempotency-Key` cho `create` và `cancel`; truyền `idempotency_key:` khi anh chị cần dùng key riêng. Nguồn sự thật để giao hàng là webhook `CHECKOUT_PAID` hoặc kết quả `get`, không phải redirect trình duyệt.
 
 ```elixir
 result = MonaPay.verify_webhook(raw_body, timestamp, signature, webhook_secret)
