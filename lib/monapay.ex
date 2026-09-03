@@ -12,6 +12,21 @@ defmodule MonaPay do
 
   def start_link(options), do: GenServer.start_link(__MODULE__, options)
 
+  def from_env(options \\ []) do
+    start_link(
+      Keyword.merge(
+        [
+          client_id: System.get_env("MONAPAY_CLIENT_ID"),
+          client_secret: System.get_env("MONAPAY_CLIENT_SECRET"),
+          username: System.get_env("MONAPAY_USERNAME"),
+          password: System.get_env("MONAPAY_PASSWORD"),
+          base_url: System.get_env("MONAPAY_BASE_URL") || @default_base_url
+        ],
+        options
+      )
+    )
+  end
+
   def child_spec(options) do
     %{id: {__MODULE__, Keyword.get(options, :name, make_ref())}, start: {__MODULE__, :start_link, [options]}}
   end
@@ -137,6 +152,33 @@ defmodule MonaPay do
   def webhook_log_stats(client, options \\ []),
     do: call(client, :get, "/api/v1/webhook-logs/stats", nil, log_query(options))
 
+  def create_sandbox_transaction(client, body),
+    do: call(client, :post, "/api/v1/sandbox/transactions", body)
+
+  def list_email_configs(client), do: call(client, :get, "/api/v1/email-configs")
+  def create_email_config(client, body), do: call(client, :post, "/api/v1/email-configs", body)
+  def get_email_config(client, id), do: call(client, :get, "/api/v1/email-configs/#{segment(id)}")
+  def update_email_config(client, id, body), do: call(client, :put, "/api/v1/email-configs/#{segment(id)}", body)
+  def remove_email_config(client, id), do: call(client, :delete, "/api/v1/email-configs/#{segment(id)}")
+
+  def verify_email_config(client, id, email, code),
+    do: call(client, :post, "/api/v1/email-configs/#{segment(id)}/verify", %{"email" => email, "code" => code})
+
+  def resend_email_verification(client, id, email),
+    do: call(client, :post, "/api/v1/email-configs/#{segment(id)}/resend-verification", %{"email" => email})
+
+  def test_email_config(client, id),
+    do: call(client, :post, "/api/v1/email-configs/#{segment(id)}/test", %{})
+
+  def list_email_logs(client, options \\ []),
+    do: call(client, :get, "/api/v1/email-logs", nil, email_log_query(options))
+
+  def email_log_stats(client, options \\ []),
+    do: call(client, :get, "/api/v1/email-logs/stats", nil, Keyword.take(options, [:from_date, :to_date]))
+
+  def list_email_suppressions(client), do: call(client, :get, "/api/v1/email-suppressions")
+  def remove_email_suppression(client, email), do: call(client, :delete, "/api/v1/email-suppressions/#{segment(email)}")
+
   def verify_webhook(raw, timestamp, signature, secret, tolerance \\ 300),
     do: MonaPay.Webhook.verify_webhook(raw, timestamp, signature, secret, tolerance)
 
@@ -147,12 +189,14 @@ defmodule MonaPay do
   def init(options) do
     username = options[:username] |> to_string_or_empty()
     password = options[:password] |> to_string_or_empty()
+    client_id = options[:client_id] |> to_string_or_empty()
+    client_secret = options[:client_secret] |> to_string_or_empty()
     base_url = options[:base_url] || @default_base_url
     transport = options[:transport] || &MonaPay.HTTPTransport.send/4
 
     cond do
-      String.trim(username) == "" -> {:stop, "username là bắt buộc"}
-      password == "" -> {:stop, "password là bắt buộc"}
+      (String.trim(client_id) == "" or client_secret == "") and (String.trim(username) == "" or password == "") ->
+        {:stop, "Cần client ID + client secret hoặc username + password; không dùng password cho AI agent vì sẽ gãy khi bật 2FA"}
       not valid_base_url?(base_url) -> {:stop, "base_url phải là URL http/https hợp lệ"}
       not is_function(transport, 4) -> {:stop, "transport phải là function arity 4"}
       true ->
@@ -160,9 +204,11 @@ defmodule MonaPay do
          %{
            username: username,
            password: password,
-           client_secret: to_string_or_empty(options[:client_secret]),
+           client_id: client_id,
+           client_secret: client_secret,
            base_url: String.trim_trailing(base_url, "/"),
            token: nil,
+           token_expires_at: 0,
            transport: transport
          }}
     end
@@ -190,7 +236,7 @@ defmodule MonaPay do
     with {:ok, token, logged_in} <- ensure_login(state) do
       case send_request(logged_in, method, path, body, query, token, true) do
         {:error, %MonaPay.Error{status: 401}} ->
-          expired = %{logged_in | token: nil}
+          expired = %{logged_in | token: nil, token_expires_at: 0}
 
           case ensure_login(expired) do
             {:ok, refreshed, refreshed_state} ->
@@ -212,15 +258,29 @@ defmodule MonaPay do
     end
   end
 
-  defp ensure_login(%{token: token} = state) when is_binary(token) and token != "",
-    do: {:ok, token, state}
+  defp ensure_login(%{token: token, token_expires_at: expires_at} = state)
+       when is_binary(token) and token != "" do
+    if System.system_time(:second) < expires_at,
+      do: {:ok, token, state},
+      else: perform_login(%{state | token: nil, token_expires_at: 0})
+  end
 
-  defp ensure_login(state) do
-    body = %{"username" => state.username, "password" => state.password}
+  defp ensure_login(state), do: perform_login(state)
 
-    case send_request(state, :post, "/api/v1/client/login", body, [], nil, false) do
-      {:ok, %{"access_token" => token}} when is_binary(token) and token != "" ->
-        {:ok, token, %{state | token: token}}
+  defp perform_login(state) do
+    using_client_credentials = state.client_id != "" and state.client_secret != ""
+
+    body =
+      if using_client_credentials,
+        do: %{"grant_type" => "client_credentials", "client_id" => state.client_id, "client_secret" => state.client_secret},
+        else: %{"username" => state.username, "password" => state.password}
+
+    path = if using_client_credentials, do: "/api/v1/oauth/token", else: "/api/v1/client/login"
+
+    case send_request(state, :post, path, body, [], nil, false) do
+      {:ok, %{"access_token" => token} = data} when is_binary(token) and token != "" ->
+        expires_in = integer(data["expires_in"], if(using_client_credentials, do: 3600, else: 86_400))
+        {:ok, token, %{state | token: token, token_expires_at: System.system_time(:second) + max(expires_in - 60, 0)}}
 
       {:ok, data} ->
         {:error, %MonaPay.Error{message: "Response đăng nhập không có access_token", body: data}, state}
@@ -294,6 +354,13 @@ defmodule MonaPay do
       to_date: options[:to_date],
       page: options[:page],
       limit: options[:limit]
+    ]
+  end
+
+  defp email_log_query(options) do
+    [
+      config_id: options[:config_id], status: options[:status], event_type: options[:event_type],
+      from_date: options[:from_date], to_date: options[:to_date], page: options[:page], limit: options[:limit]
     ]
   end
 

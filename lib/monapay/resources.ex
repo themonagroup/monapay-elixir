@@ -49,3 +49,28 @@ defmodule MonaPay.WebhookLogs do
   def list(client, options \\ []), do: MonaPay.list_webhook_logs(client, options)
   def stats(client, options \\ []), do: MonaPay.webhook_log_stats(client, options)
 end
+
+defmodule MonaPay.Sandbox do
+  def create_transaction(client, body), do: MonaPay.create_sandbox_transaction(client, body)
+end
+
+defmodule MonaPay.EmailConfigs do
+  def list(client), do: MonaPay.list_email_configs(client)
+  def create(client, body), do: MonaPay.create_email_config(client, body)
+  def get(client, id), do: MonaPay.get_email_config(client, id)
+  def update(client, id, body), do: MonaPay.update_email_config(client, id, body)
+  def remove(client, id), do: MonaPay.remove_email_config(client, id)
+  def verify(client, id, email, code), do: MonaPay.verify_email_config(client, id, email, code)
+  def resend_verification(client, id, email), do: MonaPay.resend_email_verification(client, id, email)
+  def test(client, id), do: MonaPay.test_email_config(client, id)
+end
+
+defmodule MonaPay.EmailLogs do
+  def list(client, options \\ []), do: MonaPay.list_email_logs(client, options)
+  def stats(client, options \\ []), do: MonaPay.email_log_stats(client, options)
+end
+
+defmodule MonaPay.EmailSuppressions do
+  def list(client), do: MonaPay.list_email_suppressions(client)
+  def remove(client, email), do: MonaPay.remove_email_suppression(client, email)
+end

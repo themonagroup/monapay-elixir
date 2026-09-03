@@ -19,11 +19,12 @@ defmodule MonaPayTest do
         state = %{state | requests: state.requests ++ [{method, url, headers, body}]}
 
         cond do
-          String.ends_with?(url, "/api/v1/client/login") ->
+          String.ends_with?(url, "/api/v1/oauth/token") ->
             count = state.logins + 1
+            assert {:ok, %{"grant_type" => "client_credentials", "client_id" => "client-id", "client_secret" => "secret"}} = MonaPay.JSON.decode(body)
 
             response =
-              %{"success" => true, "data" => %{"access_token" => "token-#{count}"}}
+              %{"success" => true, "data" => %{"access_token" => "token-#{count}", "expires_in" => 3600}}
               |> MonaPay.JSON.encode()
               |> IO.iodata_to_binary()
 
@@ -40,8 +41,7 @@ defmodule MonaPayTest do
 
     {:ok, client} =
       MonaPay.start_link(
-        username: "user",
-        password: "pass",
+        client_id: "client-id",
         client_secret: "secret",
         base_url: "https://example.test",
         transport: transport
